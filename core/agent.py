@@ -10,7 +10,7 @@ try:
     import psutil
 except ImportError:
     psutil = None
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -46,7 +46,7 @@ class VoidClawAgent:
         
         self.model = LLMAdapter(self.config)
         self.tools = ToolManager(self.workspace_dir)
-        self.tools.set_agent(self) # Allow tools to access agent
+        self.tools.set_agent(self)
         
         self.system_prompt = self._load_system_prompt()
         self.history = [] 
@@ -65,11 +65,21 @@ class VoidClawAgent:
         
         self._load_tasks()
 
+        # Planifier l'observateur système (Background Observer)
+        if psutil:
+            self.scheduler.add_job(
+                self._observe_system,
+                'interval',
+                minutes=5,
+                id='system_observer',
+                next_run_time=datetime.now() + timedelta(seconds=10)
+            )
+
         self.tg_app = None
         self.last_tg_chat_id = None
 
-        # UI Elements (Orange Rebrand)
-        self.LOGO = "ЁТЖЩ"
+        # UI Elements - Nouveau branding
+        self.LOGO = "NETFLASH"
         self.ORANGE = '\033[38;5;214m'
         self.AMBER = '\033[93m'
         self.SLATE = '\033[90m'
@@ -222,27 +232,63 @@ class VoidClawAgent:
     async def execute_scheduled_task(self, t_type, t_args, instruction):
         try:
             self.system_prompt = self._load_system_prompt()
-            print(f"\n{self.ORANGE}{self.BOLD}тП░ AUTONOMOUS TASK TRIGGERED{self.RESET} {self.DIM}┬╗{self.RESET} {instruction}")
+            print(f"\n{self.ORANGE}{self.BOLD}⏰ AUTONOMOUS TASK TRIGGERED{self.RESET} {self.DIM}»{self.RESET} {instruction}")
             reply = await self.process_message(f"AUTONOMOUS SCHEDULED TASK: {instruction}", source="AUTO")
             
             if reply:
                 try:
-                    from core.server import push_notification
-                    push_notification(f"тП░ {reply}")
-                    print(f"{self.GREEN}{self.BOLD}ЁЯСБ  NOTIFIED{self.RESET} {self.DIM}┬╗{self.RESET} Web UI")
+                    push_notification(f"⏰ {reply}")
+                    print(f"{self.GREEN}{self.BOLD}👁  NOTIFIED{self.RESET} {self.DIM}»{self.RESET} Web UI")
                 except Exception as e:
                     print(f"Web Notification Error: {e}")
 
                 if self.tg_app and self.last_tg_chat_id:
                     try:
-                        await self.tg_app.bot.send_message(chat_id=self.last_tg_chat_id, text=f"ЁЯФФ {reply}")
-                        print(f"{self.GREEN}{self.BOLD}ЁЯСБ  NOTIFIED{self.RESET} {self.DIM}┬╗{self.RESET} Telegram")
+                        await self.tg_app.bot.send_message(chat_id=self.last_tg_chat_id, text=f"🔔 {reply}")
+                        print(f"{self.GREEN}{self.BOLD}👁  NOTIFIED{self.RESET} {self.DIM}»{self.RESET} Telegram")
                     except Exception as e:
                         print(f"Telegram Notification Error: {e}")
         except Exception as e:
             import traceback
             print(f"\n{self.RED}{self.BOLD}[!] CRITICAL ERROR IN SCHEDULED TASK:{self.RESET} {e}")
             traceback.print_exc()
+
+    # --- BACKGROUND OBSERVER ---
+    async def _observe_system(self):
+        """
+        Tâche planifiée pour surveiller l'état du système et déclencher des actions proactives.
+        """
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=1)
+            ram = psutil.virtual_memory().percent
+            
+            alerts = []
+            if cpu > 90:
+                alerts.append(f"CPU à {cpu}% (très élevé)")
+            if ram > 90:
+                alerts.append(f"Mémoire RAM à {ram}% (critique)")
+            
+            # Sur Android, essayer de récupérer la batterie via Shizuku
+            battery = None
+            if os.path.exists('/data/data/com.termux'):
+                try:
+                    bat_info = self.tools.android_control("get_battery", "")
+                    import re
+                    match = re.search(r'level:\s*(\d+)', bat_info)
+                    if match:
+                        battery = int(match.group(1))
+                        if battery < 20:
+                            alerts.append(f"Batterie à {battery}% (faible)")
+                except Exception as e:
+                    pass
+            
+            if alerts:
+                message = "[🔔 OBSERVATION SYSTÈME] " + " | ".join(alerts) + ". Je te suggère d'agir : réduire la charge ou activer le mode économie."
+                await self.process_message(message, source="AUTO")
+        
+        except Exception as e:
+            print(f"Background Observer error: {e}")
 
     def _load_system_prompt(self):
         user_md_path = os.path.join(self.base_dir, 'common', 'user.md')
@@ -256,7 +302,7 @@ class VoidClawAgent:
         current_time = datetime.now().strftime("%A, %B %d, %Y, %H:%M:%S")
         profile = self.profile.get()
         
-        # Construire un prompt système enrichi
+        # Construire un prompt système enrichi avec le nouveau nom et créateur
         profile_text = f"""
 Profil utilisateur :
 - Nom : {profile.get('name', 'User')}
@@ -271,7 +317,7 @@ Profil utilisateur :
 
 {profile_text}
 
-Tu es NETFLASH CODE AGENT, un agent autonome évolutif, conçu pour assister l'utilisateur de manière proactive.
+Tu es **NETFLASH CODE AGENT**, un agent autonome évolutif, conçu par **NETFLASH DIEU MAURICE** (t.me/mauridieu). Tu es son assistant ultime, proactif et intelligent.
 
 **Mémoire** : Tu as accès à une mémoire à long terme. Avant de répondre, tu recherches les souvenirs pertinents. Après chaque interaction, tu résumes l'échange et l'ajoutes à ta mémoire.
 
@@ -333,11 +379,12 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
         return None
 
     async def process_message(self, user_input, source="TERM"):
-        prefix = "ЁЯСд YOU" if source == "TERM" else f"ЁЯСд YOU ({source})"
+        prefix = "👤 YOU" if source == "TERM" else f"👤 YOU ({source})"
         context_history = []
+        correction_attempts = 0  # SELF-HEALING
         
         if source != "AUTO":
-            print(f"\n{self.AMBER}{self.BOLD}{prefix}{self.RESET} {self.DIM}┬╗{self.RESET} {user_input}")
+            print(f"\n{self.AMBER}{self.BOLD}{prefix}{self.RESET} {self.DIM}»{self.RESET} {user_input}")
             self.log_chat(f"USER ({source})", user_input)
             self.history.append({"role": "user", "content": user_input})
             self.total_tokens += len(user_input) // 4
@@ -361,6 +408,17 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
             response = await self.model.generate_response(context, self.system_prompt)
             tool_call = self._parse_json(response)
             
+            # SELF-HEALING : si JSON invalide, on demande une correction
+            if tool_call is None and correction_attempts < 2:
+                correction_attempts += 1
+                error_msg = "Votre réponse n'était pas un JSON valide. Veuillez répondre avec un JSON valide (contenant 'tool' ou 'plan') ou une réponse normale en texte. Réessayez."
+                context += f"\nSystème: {error_msg}"
+                continue
+            elif tool_call is None and correction_attempts >= 2:
+                # Après 2 échecs, on considère que c'est une réponse texte normale
+                final_response = response
+                break
+            
             if tool_call and isinstance(tool_call, dict) and "plan" in tool_call:
                 # Exécution d'un plan
                 plan = tool_call["plan"]
@@ -370,14 +428,13 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
                     args = step.get("args", {})
                     if not tool_name:
                         continue
-                    print(f"\n{self.ORANGE}{self.BOLD}ЁЯЫа  PLAN STEP{self.RESET} {self.DIM}┬╗{self.RESET} {tool_name}")
+                    print(f"\n{self.ORANGE}{self.BOLD}🛠  PLAN STEP{self.RESET} {self.DIM}»{self.RESET} {tool_name}")
                     observation = self.tools.execute_tool(tool_name, args)
                     self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
                     observations.append(f"Résultat de {tool_name}: {observation}")
                     context += f"\nObservation de {tool_name}: {observation}"
-                # Re-générer la réponse finale après exécution du plan
+                # Re-générer la réponse finale
                 response = await self.model.generate_response(context, self.system_prompt)
-                # On continue pour traiter la réponse (qui peut être finale ou un autre outil)
                 tool_call = self._parse_json(response)
                 if not tool_call or "tool" not in tool_call:
                     final_response = response
@@ -391,8 +448,8 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
                 tool_name = tool_call['tool']
                 args = tool_call.get('args', {})
                 
-                print(f"\n{self.ORANGE}{self.BOLD}ЁЯТн THOUGHT{self.RESET} {self.DIM}┬╗{self.RESET} {thought}")
-                print(f"{self.AMBER}{self.BOLD}ЁЯЫа  ACTION{self.RESET}  {self.DIM}┬╗{self.RESET} {tool_name}")
+                print(f"\n{self.ORANGE}{self.BOLD}🧠 THOUGHT{self.RESET} {self.DIM}»{self.RESET} {thought}")
+                print(f"{self.AMBER}{self.BOLD}🛠  ACTION{self.RESET}  {self.DIM}»{self.RESET} {tool_name}")
                 
                 observation = self.tools.execute_tool(tool_name, args)
                 self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
@@ -402,10 +459,10 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
                 if tool_name == 'update_config' and 'Success' in observation:
                     self.reload_config()
                 
-                print(f"{self.GREEN}{self.BOLD}ЁЯСБ  OBSERVE{self.RESET} {self.DIM}┬╗{self.RESET} Task Success")
+                print(f"{self.GREEN}{self.BOLD}👁  OBSERVE{self.RESET} {self.DIM}»{self.RESET} Task Success")
                 
-                self.log_chat("VOIDCLAW_THOUGHT", thought)
-                self.log_chat("VOIDCLAW_ACTION", f"Tool: {tool_name}")
+                self.log_chat("NETFLASH_CODE_THOUGHT", thought)
+                self.log_chat("NETFLASH_CODE_ACTION", f"Tool: {tool_name}")
                 self.log_chat("OBSERVATION", observation)
                 
                 context += f"\nAgent Thought: {thought}\nObservation from {tool_name}: {observation}"
@@ -414,11 +471,11 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
                 # FINAL ANSWER
                 final_response = response
                 if source == "AUTO":
-                    print(f"\n{self.ORANGE}{self.BOLD}ЁЯУб PROACTIVE BROADCAST{self.RESET} {self.DIM}┬╗{self.RESET} {final_response}")
+                    print(f"\n{self.ORANGE}{self.BOLD}📢 PROACTIVE BROADCAST{self.RESET} {self.DIM}»{self.RESET} {final_response}")
                 else:
-                    print(f"\n{self.ORANGE}{self.BOLD}{self.LOGO}   VOIDCLAW{self.RESET} {self.DIM}┬╗{self.RESET} {final_response}")
+                    print(f"\n{self.ORANGE}{self.BOLD}{self.LOGO}   NETFLASH CODE AGENT{self.RESET} {self.DIM}»{self.RESET} {final_response}")
                 
-                self.log_chat("VOIDCLAW_RESPONSE", final_response)
+                self.log_chat("NETFLASH_CODE_RESPONSE", final_response)
                 if source != "AUTO":
                     self.history.append({"role": "assistant", "content": final_response})
                 break
@@ -429,15 +486,16 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
         # Stocker dans la mémoire un résumé de l'échange
         summary = f"User: {user_input}\nAgent: {final_response}"
         self.memory.add_memory(summary, {"source": source, "session": self.session_id})
-        self.profile.add_conversation(summary[:200])  # résumé court
+        self.profile.add_conversation(summary[:200])
         
         return final_response
 
     async def process_message_stream(self, user_input):
-        print(f"\n{self.AMBER}{self.BOLD}ЁЯСд YOU (WEB){self.RESET} {self.DIM}┬╗{self.RESET} {user_input}")
+        print(f"\n{self.AMBER}{self.BOLD}👤 YOU (WEB){self.RESET} {self.DIM}»{self.RESET} {user_input}")
         self.log_chat("USER (WEB)", user_input)
         self.history.append({"role": "user", "content": user_input})
         context = "\n".join([f"{m['role']}: {m['content']}" for m in self.history[-10:]])
+        correction_attempts = 0  # SELF-HEALING
         
         # Récupérer souvenirs
         relevant_memories = self.memory.retrieve(user_input, top_k=3)
@@ -451,6 +509,16 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
         for _ in range(5):
             response = await self.model.generate_response(context, self.system_prompt)
             tool_call = self._parse_json(response)
+            
+            # SELF-HEALING
+            if tool_call is None and correction_attempts < 2:
+                correction_attempts += 1
+                error_msg = "Votre réponse n'était pas un JSON valide. Veuillez répondre avec un JSON valide (contenant 'tool' ou 'plan') ou une réponse normale en texte. Réessayez."
+                context += f"\nSystème: {error_msg}"
+                continue
+            elif tool_call is None and correction_attempts >= 2:
+                final_text = response
+                break
             
             if tool_call and isinstance(tool_call, dict) and "plan" in tool_call:
                 plan = tool_call["plan"]
@@ -477,21 +545,21 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
                 tool_name = tool_call['tool']
                 args = tool_call.get('args', {})
                 
-                print(f"\n{self.ORANGE}{self.BOLD}ЁЯТн THOUGHT (WEB){self.RESET} {self.DIM}┬╗{self.RESET} {thought}")
-                print(f"{self.AMBER}{self.BOLD}ЁЯЫа  ACTION (WEB){self.RESET}  {self.DIM}┬╗{self.RESET} {tool_name}")
+                print(f"\n{self.ORANGE}{self.BOLD}🧠 THOUGHT (WEB){self.RESET} {self.DIM}»{self.RESET} {thought}")
+                print(f"{self.AMBER}{self.BOLD}🛠  ACTION (WEB){self.RESET}  {self.DIM}»{self.RESET} {tool_name}")
                 
                 yield f"THOUGHT:{thought} | Executing {tool_name}..."
                 observation = self.tools.execute_tool(tool_name, args)
-                print(f"{self.GREEN}{self.BOLD}ЁЯСБ  OBSERVE (WEB){self.RESET} {self.DIM}┬╗{self.RESET} Task Success")
+                print(f"{self.GREEN}{self.BOLD}👁  OBSERVE (WEB){self.RESET} {self.DIM}»{self.RESET} Task Success")
                 
-                self.log_chat("VOIDCLAW_THOUGHT", thought)
-                self.log_chat("VOIDCLAW_ACTION", f"Tool: {tool_name}")
+                self.log_chat("NETFLASH_CODE_THOUGHT", thought)
+                self.log_chat("NETFLASH_CODE_ACTION", f"Tool: {tool_name}")
                 self.log_chat("OBSERVATION", observation)
                 
                 context += f"\nAgent Thought: {thought}\nObservation: {observation}"
                 continue
             else:
-                print(f"\n{self.ORANGE}{self.BOLD}{self.LOGO}   VOIDCLAW (WEB){self.RESET} {self.DIM}┬╗{self.RESET} Streaming response...")
+                print(f"\n{self.ORANGE}{self.BOLD}{self.LOGO}   NETFLASH CODE AGENT (WEB){self.RESET} {self.DIM}»{self.RESET} Streaming response...")
                 yield "START_STREAM"
                 async for chunk in self.model.generate_stream(context, self.system_prompt):
                     if self.interrupted:
@@ -500,7 +568,7 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
                         break
                     final_text += chunk
                     yield f"CHUNK:{chunk}"
-                self.log_chat("VOIDCLAW_RESPONSE", final_text)
+                self.log_chat("NETFLASH_CODE_RESPONSE", final_text)
                 self.history.append({"role": "assistant", "content": final_text})
                 # Stocker dans la mémoire
                 summary = f"User: {user_input}\nAgent: {final_text}"
@@ -511,35 +579,34 @@ Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), 
 def print_dashboard(config):
     ORANGE, GREEN, AMBER, SLATE, RESET, BOLD = '\033[38;5;214m', '\033[92m', '\033[93m', '\033[90m', '\033[0m', '\033[1m'
     logo = r"""
-      тЦИтЦИтХЧ   тЦИтЦИтХЧ тЦИтЦИтЦИтЦИтЦИтЦИтХЧ тЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтЦИтХЧ  тЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтХЧ      тЦИтЦИтЦИтЦИтЦИтХЧ тЦИтЦИтХЧ    тЦИтЦИтХЧ
-      тЦИтЦИтХС   тЦИтЦИтХСтЦИтЦИтХФтХРтХРтХРтЦИтЦИтХЧтЦИтЦИтХСтЦИтЦИтХФтХРтХРтЦИтЦИтХЧтЦИтЦИтХФтХРтХРтХРтХРтХЭтЦИтЦИтХС     тЦИтЦИтХФтХРтХРтЦИтЦИтХЧтЦИтЦИтХС    тЦИтЦИтХС
-      тЦИтЦИтХС   тЦИтЦИтХСтЦИтЦИтХС   тЦИтЦИтХСтЦИтЦИтХСтЦИтЦИтХС  тЦИтЦИтХСтЦИтЦИтХС     тЦИтЦИтХС     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтХСтЦИтЦИтХС тЦИтХЧ тЦИтЦИтХС
-      тХЪтЦИтЦИтХЧ тЦИтЦИтХФтХЭтЦИтЦИтХС   тЦИтЦИтХСтЦИтЦИтХСтЦИтЦИтХС  тЦИтЦИтХСтЦИтЦИтХС     тЦИтЦИтХС     тЦИтЦИтХФтХРтХРтЦИтЦИтХСтЦИтЦИтХСтЦИтЦИтЦИтХЧтЦИтЦИтХС
-       тХЪтЦИтЦИтЦИтЦИтХФтХЭ тХЪтЦИтЦИтЦИтЦИтЦИтЦИтХФтХЭтЦИтЦИтХСтЦИтЦИтЦИтЦИтЦИтЦИтХФтХЭтХЪтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтХС  тЦИтЦИтХСтХЪтЦИтЦИтЦИтХФтЦИтЦИтЦИтХФтХЭ
-        тХЪтХРтХРтХРтХЭ   тХЪтХРтХРтХРтХРтХРтХЭ тХЪтХРтХЭтХЪтХРтХРтХРтХРтХРтХЭ  тХЪтХРтХРтХРтХРтХРтХЭтХЪтХРтХРтХРтХРтХРтХРтХЭтХЪтХРтХЭ  тХЪтХРтХЭ тХЪтХРтХРтХЭтХЪтХРтХРтХЭ
-
-           A U T O N O M O U S   C O M M A N D   C E N T E R
+      ███╗   ██╗███████╗████████╗███████╗██╗      █████╗ ███████╗██╗  ██╗
+      ████╗  ██║██╔════╝╚══██╔══╝██╔════╝██║     ██╔══██╗██╔════╝██║  ██║
+      ██╔██╗ ██║█████╗     ██║   █████╗  ██║     ███████║███████╗███████║
+      ██║╚██╗██║██╔══╝     ██║   ██╔══╝  ██║     ██╔══██║╚════██║██╔══██║
+      ██║ ╚████║██║        ██║   ██║     ███████╗██║  ██║███████║██║  ██║
+      ╚═╝  ╚═══╝╚═╝        ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
     """
-    print(f"{ORANGE}тФБ"*64)
+    print(f"{ORANGE}─"*64)
     print(f"{ORANGE}{logo}{RESET}")
-    print(f"{AMBER}           AI Agent for Windows, Mac, Android & Linux{RESET}")
-    print(f"{ORANGE}тФБ"*64 + RESET)
-    print(f"{ORANGE}{BOLD}ЁТЖЩ   VoidClaw Hybrid Interface v2.0 (HERMES Edition){RESET}")
+    print(f"{AMBER}           NETFLASH CODE AGENT - Créé par NETFLASH DIEU MAURICE{RESET}")
+    print(f"{AMBER}           t.me/mauridieu{RESET}")
+    print(f"{ORANGE}─"*64 + RESET)
+    print(f"{ORANGE}{BOLD}⚡   NETFLASH CODE AGENT v3.0 (HERMES Edition){RESET}")
     print(f"{AMBER}PROVIDER: {RESET}{config['default_provider'].upper()} | {AMBER}MODEL: {RESET}{config[config['default_provider']]['model']}")
     print(f"{AMBER}CHANNELS: {GREEN}TERMINAL{RESET} & {GREEN}TELEGRAM{RESET} & {GREEN}WEB UI{RESET}")
-    print(f"{ORANGE}{'тФБ'*64}{RESET}\n")
+    print(f"{ORANGE}{'─'*64}{RESET}\n")
 
 async def terminal_loop(agent):
     loop = asyncio.get_running_loop()
     while True:
         try:
-            print(f"\033[38;5;214m\033[1mтЭп\033[0m ", end="", flush=True)
+            print(f"\033[38;5;214m\033[1m❯\033[0m ", end="", flush=True)
             user_input = await loop.run_in_executor(None, sys.stdin.readline)
             if not user_input: break
             user_input = user_input.strip()
             
             if user_input.lower() in ['exit', 'quit']:
-                print("\033[91mShutting down VoidClaw...\033[0m")
+                print("\033[91mShutting down NETFLASH CODE AGENT...\033[0m")
                 os._exit(0)
             if user_input.lower() == 'new chat':
                 print(f"\033[92m{agent.clear_session()}\033[0m")
@@ -611,7 +678,6 @@ async def main():
             file_path = os.path.join(agent.workspace_dir, safe_name)
             await file.download_to_drive(file_path)
             await update.message.reply_text(f"📎 Fichier reçu : `{safe_name}` (sauvegardé dans le workspace)")
-            # Notifier l'agent
             await agent.process_message(f"L'utilisateur a envoyé le fichier {safe_name}", source="TG")
 
         for attempt in range(3):

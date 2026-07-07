@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import json
 from duckduckgo_search import DDGS
+from datetime import datetime
 
 # Production File Support
 try:
@@ -83,18 +84,15 @@ class ToolManager:
         if not os.path.exists('/data/data/com.termux'):
             return None
 
-        # Check if already in PATH
         rish_path = shutil.which('rish')
         if rish_path:
             return rish_path
 
-        # Check common internal locations
         paths = ['/data/data/com.termux/files/usr/bin/rish', '/data/data/com.termux/files/home/.local/bin/rish']
         for p in paths:
             if os.path.exists(p):
                 return p
 
-        # Attempt auto-import from /sdcard/Shizuku/ (requires termux-setup-storage)
         src_dir = '/sdcard/Shizuku'
         dest_bin = '/data/data/com.termux/files/usr/bin'
         
@@ -321,7 +319,6 @@ class ToolManager:
             except Exception:
                 pass
 
-        # Fallback Scraper
         try:
             import requests
             from bs4 import BeautifulSoup
@@ -619,7 +616,7 @@ class ToolManager:
             return f"Error updating system prompt: {str(e)}"
 
     def edit_agent_code(self, file_path, new_code):
-        """Modifie un fichier du projet (avec sauvegarde)"""
+        """Modifie un fichier du projet avec sauvegarde et commit Git automatique"""
         project_root = os.path.dirname(self.workspace_dir)
         allowed_dirs = [project_root, os.path.join(project_root, 'core'), os.path.join(project_root, 'common')]
         abs_path = os.path.abspath(os.path.join(project_root, file_path))
@@ -627,12 +624,33 @@ class ToolManager:
             return "Access denied: file outside project."
         if not os.path.exists(abs_path):
             return f"File {file_path} does not exist."
+
+        # ---- GIT COMMIT AUTOMATIQUE ----
+        try:
+            repo_path = project_root
+            git_dir = os.path.join(repo_path, '.git')
+            if os.path.exists(git_dir):
+                # Ajouter tous les changements
+                subprocess.run(['git', 'add', '.'], cwd=repo_path, capture_output=True, check=False)
+                commit_msg = f"Auto-save before self-edit of {file_path} at {datetime.now().isoformat()}"
+                result = subprocess.run(
+                    ['git', 'commit', '-m', commit_msg],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                # On ignore l'erreur si rien à commit
+        except Exception as e:
+            return f"Git commit failed: {str(e)}"
+
+        # Sauvegarde et écriture
         backup = abs_path + ".bak"
         shutil.copy2(abs_path, backup)
         try:
             with open(abs_path, 'w', encoding='utf-8') as f:
                 f.write(new_code)
-            return f"Success: {file_path} modified. Backup saved as {backup}. Please restart the agent to apply changes."
+            return f"Success: {file_path} modified. Backup saved as {backup}. Git commit performed. Please restart the agent to apply changes."
         except Exception as e:
             if os.path.exists(backup):
                 shutil.copy2(backup, abs_path)
