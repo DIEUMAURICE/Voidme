@@ -1,10 +1,6 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
+# Lancement de Voidme
 
-# Ensure we are in the root directory
-cd "$(dirname "$0")/.."
-
-if [ -d ".venv" ]; then
-    source .venv/bin/activate
-fi
-
-python -m core.agent
+cd "$(dirname "$0")/.."  # Se place à la racine du projet
+source venv/bin/activate
+python main.py
