@@ -1,7 +1,7 @@
 <div align="center">
   
 <!-- Main Logo -->
-<img width="2167" height="406" alt="Voidclaw" src="https://github.com/user-attachments/assets/9dcf262a-956b-492b-a680-be1d01f3e8ae" />
+<img width="2167" height="406" alt="NETFLASH" src="https://github.com/user-attachments/assets/9dcf262a-956b-492b-a680-be1d01f3e8ae" />
 
 <!-- Clean Title -->
 <h1>
@@ -121,15 +121,15 @@ proot-distro install ubuntu
 proot-distro login ubuntu
 ```
 ```
-git clone https://github.com/AbuZar-Ansarii/VoidClaw-Agent.git
+git clone https://github.com/DIEUMAURICE/Voidme.git
 ```
 ```
-cd VoidClaw-Agent
+cd Voidme
 ```
 ```
 chmod +x linux/install.sh linux/run.sh && ./linux/install.sh
 ```
-**Run to start VoidClaw Agent**
+**Run to start Voidme Agent**
 ```
 ./linux/install.sh
 ```
@@ -140,8 +140,8 @@ chmod +x linux/install.sh linux/run.sh && ./linux/install.sh
     ```bash
     pkg update -y && pkg upgrade -y
     pkg install git -y
-    git clone https://github.com/AbuZar-Ansarii/VoidClaw-Agent.git
-    cd VoidClaw-Agent
+    git clone https://github.com/DIEUMAURICE/Voidme.git
+    cd Voidme
     chmod +x termux/install.sh termux/run.sh
     ./termux/install.sh
     ```
@@ -151,7 +151,7 @@ chmod +x linux/install.sh linux/run.sh && ./linux/install.sh
 ```
 #### For Fresh termux Start
 ```
-cd VoidClaw-Agent
+cd Voidme
 ```
 ```
 ./termux/run.sh
@@ -180,7 +180,7 @@ cd VoidClaw-Agent
 ### 🪟 Windows Setup
 1. Clone Repo:
 ```
-git clone https://github.com/AbuZar-Ansarii/VoidClaw-Agent.git
+git clone https://github.com/DIEUMAURICE/Voidme.git
 ```
 5. Double-click `windows\install.bat` and follow the wizard.
    
@@ -190,10 +190,10 @@ git clone https://github.com/AbuZar-Ansarii/VoidClaw-Agent.git
 
 Clone Repo: 
 ```
-git clone https://github.com/AbuZar-Ansarii/VoidClaw-Agent.git
+git clone https://github.com/DIEUMAURICE/Voidme.git
 ```
 ```
- cd VoidClaw-Agent
+ cd Voidme
 ```
 
 ***Based on System(Mac/Linux) Run:***
@@ -220,5 +220,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 <div align="center">
   <i>Conceptualized and Built by Mohd Abuzar</i><br>
-  <b>VoidClaw: Autonomous. Evolutionary. Universal.</b>
+  <b>Voidme: Autonomous. Evolutionary. Universal.</b>
 </div>
