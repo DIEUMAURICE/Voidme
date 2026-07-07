@@ -13,13 +13,16 @@ from waitress import serve
 app = Flask(__name__, static_folder='web')
 CORS(app)
 
-# Global agent instance and multi-client notification system
 agent = None
 clients = []
 
-# Configure upload folder
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'workspace')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# Route pour servir les fichiers du workspace (pour les téléchargements)
+@app.route('/workspace/<path:filename>')
+def download_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/')
 def index():
@@ -39,7 +42,13 @@ def chat():
             while True:
                 try:
                     chunk = loop.run_until_complete(gen.__anext__())
-                    yield f"data: {chunk}\n\n"
+                    # Vérifier si le chunk contient un SEND_FILE
+                    if chunk.startswith('SEND_FILE:'):
+                        file_path = chunk.split(':', 1)[1].strip()
+                        # Envoyer un événement spécial au client pour déclencher le téléchargement
+                        yield f"data: DOWNLOAD_FILE:{file_path}\n\n"
+                    else:
+                        yield f"data: {chunk}\n\n"
                 except StopAsyncIteration:
                     break
         finally:
@@ -57,6 +66,7 @@ def upload_file():
     if file:
         filename = secure_filename(file.filename)
         file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        # Notifier l'agent (optionnel)
         return jsonify({'message': f'File {filename} uploaded to workspace.'})
 
 @app.route('/settings', methods=['GET', 'POST'])
@@ -136,7 +146,6 @@ def notifications():
         try:
             while True:
                 try:
-                    # Block for 20s to wait for message, then send keep-alive
                     msg = q.get(timeout=20)
                     yield f"data: {json.dumps(msg)}\n\n"
                 except queue.Empty:

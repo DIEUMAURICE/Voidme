@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import json
 from duckduckgo_search import DDGS
 
 # Production File Support
@@ -14,6 +15,7 @@ try:
 except ImportError:
     openpyxl = None
 
+
 class ToolManager:
     def __init__(self, workspace_dir):
         self.workspace_dir = os.path.abspath(workspace_dir)
@@ -24,42 +26,57 @@ class ToolManager:
     def set_agent(self, agent):
         self.agent = agent
 
-    def execute_tool(self, tool_name, args):
-        tools = {
-            "list_files": self.list_files,
-            "list_files_recursive": self.list_files_recursive,
-            "get_workspace_tree": self.get_workspace_tree,
-            "read_file": self.read_file,
-            "write_file": self.write_file,
-            "delete_file": self.delete_file,
-            "create_directory": self.create_directory,
-            "move_file": self.move_file,
-            "rename_file": self.rename_file,
-            "read_pdf": self.read_pdf,
-            "read_excel": self.read_excel,
-            "web_search": self.web_search,
-            "get_memory": self.get_memory,
-            "update_memory": self.update_memory,
-            "update_config": self.update_config,
-            "update_user_profile": self.update_user_profile,
-            "fetch_youtube_transcript": self.fetch_youtube_transcript,
-            "fetch_weather": self.fetch_weather,
-            "web_scrape": self.web_scrape,
-            "python_sandbox": self.python_sandbox,
-            "download_youtube": self.download_youtube,
-            "convert_media": self.convert_media,
-            "local_rag_search": self.local_rag_search,
-            "schedule_task": self.schedule_task,
-            "list_tasks": self.list_tasks,
-            "remove_task": self.remove_task,
-            "remove_all_tasks": self.remove_all_tasks,
-            "remind_me": self.remind_me,
-            "stop_reminders": self.stop_reminders,
-            "android_control": self.android_control
-        }
-        if tool_name in tools:
-            return tools[tool_name](**args)
-        return f"Tool {tool_name} not found."
+    def execute_tool(self, tool_name, args, retries=3):
+        """
+        Exécute un outil avec réessais en cas d'échec.
+        """
+        for attempt in range(retries):
+            try:
+                tools = {
+                    "list_files": self.list_files,
+                    "list_files_recursive": self.list_files_recursive,
+                    "get_workspace_tree": self.get_workspace_tree,
+                    "read_file": self.read_file,
+                    "write_file": self.write_file,
+                    "delete_file": self.delete_file,
+                    "create_directory": self.create_directory,
+                    "move_file": self.move_file,
+                    "rename_file": self.rename_file,
+                    "read_pdf": self.read_pdf,
+                    "read_excel": self.read_excel,
+                    "web_search": self.web_search,
+                    "get_memory": self.get_memory,
+                    "update_memory": self.update_memory,
+                    "update_config": self.update_config,
+                    "update_user_profile": self.update_user_profile,
+                    "fetch_youtube_transcript": self.fetch_youtube_transcript,
+                    "fetch_weather": self.fetch_weather,
+                    "web_scrape": self.web_scrape,
+                    "python_sandbox": self.python_sandbox,
+                    "download_youtube": self.download_youtube,
+                    "convert_media": self.convert_media,
+                    "local_rag_search": self.local_rag_search,
+                    "schedule_task": self.schedule_task,
+                    "list_tasks": self.list_tasks,
+                    "remove_task": self.remove_task,
+                    "remove_all_tasks": self.remove_all_tasks,
+                    "remind_me": self.remind_me,
+                    "stop_reminders": self.stop_reminders,
+                    "android_control": self.android_control,
+                    "edit_system_prompt": self.edit_system_prompt,
+                    "edit_agent_code": self.edit_agent_code,
+                    "get_user_profile": self.get_user_profile,
+                }
+                if tool_name in tools:
+                    return tools[tool_name](**args)
+                else:
+                    return f"Tool {tool_name} not found."
+            except Exception as e:
+                if attempt == retries - 1:
+                    return f"Erreur après {retries} tentatives pour {tool_name}: {str(e)}"
+                import time
+                time.sleep(2 ** attempt)
+        return "Échec inattendu"
 
     def _provision_shizuku(self):
         """Attempts to auto-import and configure Shizuku files if missing."""
@@ -68,12 +85,14 @@ class ToolManager:
 
         # Check if already in PATH
         rish_path = shutil.which('rish')
-        if rish_path: return rish_path
+        if rish_path:
+            return rish_path
 
         # Check common internal locations
         paths = ['/data/data/com.termux/files/usr/bin/rish', '/data/data/com.termux/files/home/.local/bin/rish']
         for p in paths:
-            if os.path.exists(p): return p
+            if os.path.exists(p):
+                return p
 
         # Attempt auto-import from /sdcard/Shizuku/ (requires termux-setup-storage)
         src_dir = '/sdcard/Shizuku'
@@ -81,10 +100,9 @@ class ToolManager:
         
         if os.path.exists(os.path.join(src_dir, 'rish')):
             try:
-                # Auto-Provisioning Sequence
                 os.system(f"cp {src_dir}/rish* {dest_bin}/")
                 os.system(f"chmod +x {dest_bin}/rish")
-                os.system(f"chmod 444 {dest_bin}/rish_shizuku.dex") # Security: must not be writable
+                os.system(f"chmod 444 {dest_bin}/rish_shizuku.dex")
                 print(f"\033[92m[SYSTEM]\033[0m Shizuku environment provisioned successfully.")
                 return os.path.join(dest_bin, 'rish')
             except Exception as e:
@@ -97,12 +115,10 @@ class ToolManager:
         if not is_android:
             return "Error: Android control is only available on Android/Termux environments."
 
-        # 1. Ensure Shizuku is Provisioned
         rish_path = self._provision_shizuku()
         if not rish_path:
             return "Error: Shizuku not set up. Please: 1. In Shizuku app, tap 'Use in terminal' -> 'Export files'. 2. Save to 'Shizuku' folder. 3. Run 'termux-setup-storage' in Termux."
 
-        # 2. Command Execution
         cmd_map = {
             "open_app": f"monkey -p {target} -c android.intent.category.LAUNCHER 1",
             "home": "input keyevent 3",
@@ -146,36 +162,22 @@ class ToolManager:
 
         final_cmd = cmd_map[action]
         try:
-            # Set required environment variable for rish
             env = os.environ.copy()
             env["RISH_APPLICATION_ID"] = "com.termux"
 
-            # Execute via sh rish to ensure shell compatibility
             result = subprocess.run(["sh", rish_path, "-c", final_cmd], capture_output=True, text=True, timeout=15, env=env)
             
             if result.returncode == 0:
                 if action == "screenshot":
-                    # Move from sdcard to workspace
-                    src = "/sdcard/voidclaw_screenshot.png"
-                    dest = os.path.join(self.workspace_dir, f"screenshot_{os.urandom(2).hex()}.png")
-                    # We need rish to move it because Termux might not have direct /sdcard access without setup
-                    # Actually, if termux-setup-storage is done, we can just move it.
-                    # But safer to use rish to cat it to a file in workspace
-                    move_cmd = f"cat {src} > {dest}" # This is wrong, dest is local path. 
-                    # Correct way: capture output of rish screencap or pull it.
-                    # Let's use rish to write directly to a path rish can access, then move it.
-                    # Simplified: rish -c 'screencap -p' > local_file
-                    
-                    # RE-RUN for screenshot to capture stdout directly
                     screenshot_dest = os.path.join(self.workspace_dir, f"screenshot_{os.urandom(2).hex()}.png")
                     with open(screenshot_dest, "wb") as f:
                         subprocess.run(["sh", rish_path, "-c", "screencap -p"], stdout=f, env=env, timeout=20)
                     return f"Success: Screenshot saved to workspace as {os.path.basename(screenshot_dest)}"
-
                 return f"Success: Action '{action}' executed."
             else:
                 stderr = result.stderr.strip()
-                if not stderr and result.stdout: stderr = result.stdout.strip()
+                if not stderr and result.stdout:
+                    stderr = result.stdout.strip()
                 return f"Error from Android: {stderr if stderr else 'Unknown error'}"
         except subprocess.TimeoutExpired:
             return "Error: Command timed out. Is Shizuku service running?"
@@ -188,33 +190,7 @@ class ToolManager:
             raise ValueError("Access outside workspace is restricted.")
         return path
 
-    def update_config(self, key, value, subkey=None):
-        try:
-            import yaml
-            config_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'config.yaml')
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            if subkey:
-                if key not in config: config[key] = {}
-                config[key][subkey] = value
-            else:
-                config[key] = value
-                
-            with open(config_path, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False)
-            return f"Success: {key}{'/' + subkey if subkey else ''} set to {value}. LLM changes are instant; Telegram changes require a restart."
-        except Exception as e:
-            return f"Error updating config: {str(e)}"
-
-    def update_user_profile(self, info):
-        try:
-            user_md_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'user.md')
-            with open(user_md_path, 'a', encoding='utf-8') as f:
-                f.write(f"\n- {info}")
-            return "User profile updated with new information."
-        except Exception as e:
-            return str(e)
+    # ==================== OUTILS DE FICHIERS ====================
 
     def list_files(self):
         try:
@@ -247,22 +223,17 @@ class ToolManager:
         except Exception as e:
             return str(e)
 
-    # ----- MODIFICATION ICI -----
-    # read_file accepte maintenant 'path' ou 'filename'
     def read_file(self, path=None, filename=None):
         try:
             file = path or filename
             if file is None:
                 return "Error: missing file path or filename"
-            # On utilise le même nom de variable pour la suite
             full_path = self._safe_path(file)
             ext = os.path.splitext(file)[1].lower()
-            
             if ext == '.pdf':
-                return self.read_pdf(file)   # pass file name (relative)
+                return self.read_pdf(file)
             elif ext in ['.xlsx', '.xls']:
                 return self.read_excel(file)
-                
             with open(full_path, 'r', encoding='utf-8') as f:
                 return f.read()
         except Exception as e:
@@ -276,7 +247,7 @@ class ToolManager:
             text = ""
             for page in reader.pages:
                 text += page.extract_text() + "\n"
-            return text[:10000] # Cap output
+            return text[:10000]
         except Exception as e:
             return f"Error reading PDF: {str(e)}"
 
@@ -290,7 +261,7 @@ class ToolManager:
                 output += f"--- Sheet: {sheet.title} ---\n"
                 for row in sheet.iter_rows(values_only=True):
                     output += "\t".join([str(cell) if cell is not None else "" for cell in row]) + "\n"
-            return output[:10000] # Cap output
+            return output[:10000]
         except Exception as e:
             return f"Error reading Excel: {str(e)}"
 
@@ -336,10 +307,11 @@ class ToolManager:
     def rename_file(self, old_name, new_name):
         return self.move_file(old_name, new_name)
 
+    # ==================== OUTILS WEB ET RECHERCHE ====================
+
     def web_search(self, query):
         is_termux = os.path.exists('/data/data/com.termux')
         
-        # On Termux, bypass DDGS entirely to avoid process-level panics
         if not is_termux:
             try:
                 with DDGS() as ddgs:
@@ -347,17 +319,15 @@ class ToolManager:
                     if results:
                         return "\n\n".join([f"Title: {r['title']}\nLink: {r['href']}\nSnippet: {r['body']}" for r in results])
             except Exception:
-                pass # Fallback to scraper below
+                pass
 
-        # Robust Fallback Scraper (Primary on Termux)
+        # Fallback Scraper
         try:
             import requests
             from bs4 import BeautifulSoup
-            
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
             url = f"https://html.duckduckgo.com/html/?q={query}"
             resp = requests.get(url, headers=headers, timeout=10)
-            
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.content, "html.parser")
                 results = []
@@ -369,57 +339,34 @@ class ToolManager:
                         link = title_tag.get("href")
                         snippet = snippet_tag.get_text().strip() if snippet_tag else "No snippet available."
                         results.append(f"Title: {title}\nLink: {link}\nSnippet: {snippet}")
-                
                 if results:
                     return "\n\n".join(results)
         except Exception as e:
             return f"Search Error: {str(e)}"
-        
         return "No results found."
-
-    def get_memory(self):
-        try:
-            memory_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'memory.md')
-            with open(memory_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            return str(e)
-
-    def update_memory(self, fact):
-        try:
-            memory_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'memory.md')
-            with open(memory_path, 'a', encoding='utf-8') as f:
-                f.write(f"\n- {fact}")
-            return "Memory updated."
-        except Exception as e:
-            return str(e)
 
     def fetch_youtube_transcript(self, url):
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
             from urllib.parse import urlparse, parse_qs
             parsed_url = urlparse(url)
-            
             video_id = None
             if parsed_url.hostname in ['www.youtube.com', 'youtube.com']:
                 if parsed_url.path == '/watch':
                     video_id = parse_qs(parsed_url.query).get('v')
-                    if video_id: video_id = video_id[0]
+                    if video_id:
+                        video_id = video_id[0]
                 elif parsed_url.path.startswith(('/embed/', '/v/', '/live/')):
                     video_id = parsed_url.path.split('/')[2]
             elif parsed_url.hostname == 'youtu.be':
                 video_id = parsed_url.path.split('/')[1]
-                
             if not video_id:
-                # Fallback to simple split if hostname doesn't match expected patterns
                 video_id = parsed_url.path.split('/')[-1]
-
             api = YouTubeTranscriptApi()
             transcript_obj = api.fetch(video_id)
             transcript_data = transcript_obj.to_raw_data()
-            
             text = " ".join([t['text'] for t in transcript_data])
-            return text[:4000] # Limit size to prevent token explosion
+            return text[:4000]
         except Exception as e:
             return f"Error fetching transcript: {str(e)}"
 
@@ -443,22 +390,11 @@ class ToolManager:
             lines = (line.strip() for line in text.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
             text = '\n'.join(chunk for chunk in chunks if chunk)
-            return text[:4000] # Limit size
+            return text[:4000]
         except Exception as e:
             return f"Error scraping web: {str(e)}"
 
-    def python_sandbox(self, code):
-        try:
-            import subprocess
-            result = subprocess.run(["python", "-c", code], capture_output=True, text=True, timeout=10)
-            output = result.stdout
-            if result.stderr:
-                output += f"\nError: {result.stderr}"
-            return output[-4000:] if output else "Execution completed with no output."
-        except subprocess.TimeoutExpired:
-            return "Execution timed out."
-        except Exception as e:
-            return f"Error in sandbox: {str(e)}"
+    # ==================== OUTILS MÉDIA ====================
 
     def download_youtube(self, url, format_type="video"):
         try:
@@ -494,10 +430,7 @@ class ToolManager:
             input_path = self._safe_path(input_file)
             output_file = f"{os.path.splitext(input_file)[0]}.{output_format}"
             output_path = self._safe_path(output_file)
-            
-            # Check if ffmpeg exists
             subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-            
             result = subprocess.run(['ffmpeg', '-i', input_path, output_path, '-y'], capture_output=True, text=True)
             if result.returncode == 0:
                 return f"Successfully converted {input_file} to {output_file}"
@@ -507,6 +440,56 @@ class ToolManager:
             return "Error: FFmpeg is not installed or not in system PATH."
         except Exception as e:
             return f"Error converting media: {str(e)}"
+
+    # ==================== OUTILS MÉMOIRE ET CONFIGURATION ====================
+
+    def get_memory(self):
+        try:
+            memory_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'memory.md')
+            with open(memory_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            return str(e)
+
+    def update_memory(self, fact):
+        try:
+            memory_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'memory.md')
+            with open(memory_path, 'a', encoding='utf-8') as f:
+                f.write(f"\n- {fact}")
+            return "Memory updated."
+        except Exception as e:
+            return str(e)
+
+    def update_user_profile(self, info):
+        try:
+            user_md_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'user.md')
+            with open(user_md_path, 'a', encoding='utf-8') as f:
+                f.write(f"\n- {info}")
+            return "User profile updated with new information."
+        except Exception as e:
+            return str(e)
+
+    def update_config(self, key, value, subkey=None):
+        try:
+            import yaml
+            config_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'config.yaml')
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            if subkey:
+                if key not in config:
+                    config[key] = {}
+                config[key][subkey] = value
+            else:
+                config[key] = value
+                
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+            return f"Success: {key}{'/' + subkey if subkey else ''} set to {value}. LLM changes are instant; Telegram changes require a restart."
+        except Exception as e:
+            return f"Error updating config: {str(e)}"
+
+    # ==================== OUTILS RAG ====================
 
     def local_rag_search(self, query):
         try:
@@ -562,24 +545,30 @@ class ToolManager:
         except Exception as e:
             return f"Error in RAG search: {str(e)}"
 
+    # ==================== OUTILS DE PLANIFICATION ====================
+
     def remind_me(self, message, time_args):
-        if not self.agent: return "Agent not connected."
-        # Standardize instruction for better removal later
+        if not self.agent:
+            return "Agent not connected."
         instruction = f"REMINDER: {message}"
         return self.agent.add_scheduled_task('interval', time_args, instruction)
 
     def stop_reminders(self, keyword):
-        if not self.agent: return "Agent not connected."
+        if not self.agent:
+            return "Agent not connected."
         return self.agent.remove_scheduled_task(keyword)
 
     def schedule_task(self, trigger_type, schedule_args, instruction):
-        if not self.agent: return "Agent not connected."
+        if not self.agent:
+            return "Agent not connected."
         return self.agent.add_scheduled_task(trigger_type, schedule_args, instruction)
 
     def list_tasks(self):
-        if not self.agent: return "Agent not connected."
+        if not self.agent:
+            return "Agent not connected."
         jobs = self.agent.scheduler.get_jobs()
-        if not jobs: return "No active scheduled tasks."
+        if not jobs:
+            return "No active scheduled tasks."
         
         task_list = []
         for job in jobs:
@@ -587,14 +576,71 @@ class ToolManager:
         return "\n".join(task_list)
 
     def remove_task(self, keyword):
-        if not self.agent: return "Agent not connected."
+        if not self.agent:
+            return "Agent not connected."
         return self.agent.remove_scheduled_task(keyword)
 
     def remove_all_tasks(self):
-        if not self.agent: return "Agent not connected."
+        if not self.agent:
+            return "Agent not connected."
         jobs = self.agent.scheduler.get_jobs()
-        if not jobs: return "No active tasks to remove."
+        if not jobs:
+            return "No active tasks to remove."
         for job in jobs:
             self.agent.scheduler.remove_job(job.id)
         self.agent._save_tasks()
         return "Success: All scheduled tasks have been terminated."
+
+    # ==================== OUTILS DE CODE ET PYTHON ====================
+
+    def python_sandbox(self, code):
+        try:
+            import subprocess
+            result = subprocess.run(["python", "-c", code], capture_output=True, text=True, timeout=10)
+            output = result.stdout
+            if result.stderr:
+                output += f"\nError: {result.stderr}"
+            return output[-4000:] if output else "Execution completed with no output."
+        except subprocess.TimeoutExpired:
+            return "Execution timed out."
+        except Exception as e:
+            return f"Error in sandbox: {str(e)}"
+
+    # ==================== NOUVEAUX OUTILS POUR HERMES ====================
+
+    def edit_system_prompt(self, new_content):
+        """Modifie le fichier user.md (prompt système)"""
+        try:
+            user_md_path = os.path.join(os.path.dirname(self.workspace_dir), 'common', 'user.md')
+            with open(user_md_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            return "Success: System prompt updated. Reload will take effect on next interaction."
+        except Exception as e:
+            return f"Error updating system prompt: {str(e)}"
+
+    def edit_agent_code(self, file_path, new_code):
+        """Modifie un fichier du projet (avec sauvegarde)"""
+        project_root = os.path.dirname(self.workspace_dir)
+        allowed_dirs = [project_root, os.path.join(project_root, 'core'), os.path.join(project_root, 'common')]
+        abs_path = os.path.abspath(os.path.join(project_root, file_path))
+        if not any(os.path.commonpath([abs_path, d]) == d for d in allowed_dirs):
+            return "Access denied: file outside project."
+        if not os.path.exists(abs_path):
+            return f"File {file_path} does not exist."
+        backup = abs_path + ".bak"
+        shutil.copy2(abs_path, backup)
+        try:
+            with open(abs_path, 'w', encoding='utf-8') as f:
+                f.write(new_code)
+            return f"Success: {file_path} modified. Backup saved as {backup}. Please restart the agent to apply changes."
+        except Exception as e:
+            if os.path.exists(backup):
+                shutil.copy2(backup, abs_path)
+            return f"Error editing code: {str(e)}"
+
+    def get_user_profile(self):
+        """Retourne le profil utilisateur complet sous forme JSON"""
+        if not self.agent:
+            return "Agent not connected."
+        profile = self.agent.profile.get()
+        return json.dumps(profile, indent=2, ensure_ascii=False)
