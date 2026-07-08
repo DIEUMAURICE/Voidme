@@ -1,191 +1,722 @@
 import os
-import re
 import yaml
+import json
 import logging
-import requests
-from typing import Optional, Dict, Any
-from dotenv import load_dotenv
+import asyncio
+import threading
+import uuid
+import sys
+try:
+    import psutil
+except ImportError:
+    psutil = None
+from datetime import datetime, timedelta
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from core.models import LLMAdapter
+from core.tools import ToolManager
+from core.server import start_web_server, push_notification
+from core.memory import MemoryManager
+from core.profile import UserProfile
 
-# Import de nos modules maison
-from solid_memory import SolidMemory
-from tools import read_file, write_file, append_file, list_files, delete_file, get_file_info
+# Disable noisy logs
+logging.basicConfig(level=logging.ERROR)
 
-load_dotenv()  # Charge les variables depuis .env
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class VoidmeAgent:
-    """
-    Agent central : 
-    - Appelle une API LLM (OpenRouter/Groq) à la place d'Ollama.
-    - Utilise SolidMemory pour le contexte.
-    - Exécute des commandes fichiers via tools.py.
-    """
-
-    def __init__(self, config_path: str = "config.yaml"):
-        # Chargement de la configuration
-        self.config = self._load_config(config_path)
+class VoidClawAgent:
+    def __init__(self, config_path):
+        self.config_path = config_path
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
         
-        # Récupération de la clé API (priorité .env)
-        self.api_key = os.getenv("OPENROUTER_API_KEY") or self.config.get("api_key")
-        if not self.api_key:
-            raise ValueError("❌ Clé API OpenRouter manquante. Mets-la dans .env ou config.yaml")
+        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.workspace_dir = os.path.join(self.base_dir, self.config.get('workspace_dir', 'workspace'))
+        self.chats_dir = os.path.join(self.base_dir, 'common', 'chats')
+        self.tasks_path = os.path.join(self.base_dir, 'common', 'tasks.yaml')
+        self.profile_path = os.path.join(self.base_dir, 'common', 'user_profile.json')
+        
+        if not os.path.exists(self.chats_dir):
+            os.makedirs(self.chats_dir)
+        
+        # Initialisation de la mémoire et du profil
+        self.memory = MemoryManager(persist_dir=os.path.join(self.base_dir, 'common', 'memory_db'))
+        self.profile = UserProfile(self.profile_path)
+        
+        self.model = LLMAdapter(self.config)
+        self.tools = ToolManager(self.workspace_dir)
+        self.tools.set_agent(self)
+        
+        self.system_prompt = self._load_system_prompt()
+        self.history = [] 
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.start_time = datetime.now()
+        self.total_tokens = 0
+        self.tool_usage = {}
+        self.interrupted = False
 
-        # Modèles (par défaut, Gemini Flash car très rapide et peu cher)
-        self.llm_model = os.getenv("LLM_MODEL") or self.config.get("llm_model", "google/gemini-flash-1.5")
-        self.embedding_model = os.getenv("EMBEDDING_MODEL") or self.config.get("embedding_model", "openai/text-embedding-3-small")
-        
-        # URL de l'API OpenRouter
-        self.llm_url = "https://openrouter.ai/api/v1/chat/completions"
-        
-        # Initialisation de la mémoire
-        self.memory = SolidMemory(
-            api_key=self.api_key,
-            embedding_model=self.embedding_model,
-            db_path=self.config.get("memory_db", "memory.db")
-        )
-        
-        # Système de base (modifiable via config)
-        self.base_system_prompt = self.config.get("system_prompt", 
-            "Tu es un assistant codeur et idéaliste. Tu aides à coder, analyser et organiser des projets. "
-            "Tu peux lire et écrire des fichiers. Utilise les balises suivantes pour interagir avec le système de fichiers :\n"
-            "- [FILE_READ:chemin/vers/fichier]\n"
-            "- [FILE_WRITE:chemin/vers/fichier] contenu du fichier\n"
-            "- [FILE_APPEND:chemin/vers/fichier] contenu à ajouter\n"
-            "- [FILE_LIST:dossier] (ou [FILE_LIST:dossier|*.py] pour filtrer)\n"
-            "- [FILE_DELETE:chemin/vers/fichier]\n"
-            "- [FILE_INFO:chemin/vers/fichier]\n"
-            "Réponds toujours en français, avec le code bien formaté."
-        )
-        
-        logger.info(f"🚀 Agent initialisé avec le modèle {self.llm_model}")
-
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        """Charge le fichier config.yaml s'il existe."""
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    return yaml.safe_load(f) or {}
-            except Exception as e:
-                logger.warning(f"Impossible de charger {path} : {e}")
-        return {}
-
-    def _call_llm(self, user_message: str, system_prompt: str) -> str:
-        """Appelle l'API LLM (OpenRouter)."""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            "temperature": 0.7,
-            "max_tokens": 4096
-        }
-        
+        # Scheduler
         try:
-            response = requests.post(self.llm_url, headers=headers, json=payload, timeout=120)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"].strip()
-        except requests.exceptions.Timeout:
-            return "⏰ Délai dépassé. L'API met trop de temps à répondre."
+            self.scheduler = AsyncIOScheduler()
         except Exception as e:
-            logger.error(f"Erreur LLM : {e}")
-            return f"❌ Erreur lors de l'appel à l'IA : {str(e)}"
+            from datetime import timezone
+            self.scheduler = AsyncIOScheduler(timezone=timezone.utc)
+        
+        self._load_tasks()
 
-    def _execute_file_commands(self, text: str) -> str:
-        """
-        Détecte et exécute les balises [FILE_XXX:...] dans le texte.
-        Retourne le texte avec les résultats des commandes insérés.
-        """
-        # Pattern pour capturer les commandes
-        pattern = r'\[FILE_(READ|WRITE|APPEND|LIST|DELETE|INFO):(.*?)\](?:\s*(.*?))?(?=\n\[FILE_|$)'
-        matches = re.findall(pattern, text, re.DOTALL)
+        # Planifier l'observateur système (Background Observer)
+        if psutil:
+            self.scheduler.add_job(
+                self._observe_system,
+                'interval',
+                minutes=5,
+                id='system_observer',
+                next_run_time=datetime.now() + timedelta(seconds=10)
+            )
+
+        self.tg_app = None
+        self.last_tg_chat_id = None
+
+        # UI Elements - Nouveau branding
+        self.LOGO = "NETFLASH"
+        self.ORANGE = '\033[38;5;214m'
+        self.AMBER = '\033[93m'
+        self.SLATE = '\033[90m'
+        self.GREEN = '\033[92m'
+        self.RED = '\033[91m'
+        self.RESET = '\033[0m'
+        self.BOLD = '\033[1m'
+        self.DIM = '\033[2m'
+
+    def reload_config(self):
+        with open(self.config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+        self.model = LLMAdapter(self.config)
+        self.system_prompt = self._load_system_prompt()
+
+    def clear_session(self):
+        self.history = []
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return "Session reset. Memory cleared."
+
+    def get_dashboard_stats(self):
+        uptime = str(datetime.now() - self.start_time).split('.')[0]
+        jobs = self.scheduler.get_jobs()
+        active_tasks = [{"id": j.id, "trigger": str(j.trigger), "instruction": j.args[2]} for j in jobs]
         
-        if not matches:
-            return text
+        activity_data = [0] * 7
+        try:
+            for f in os.listdir(self.chats_dir):
+                if f.endswith('.md'):
+                    stats = os.stat(os.path.join(self.chats_dir, f))
+                    day_idx = datetime.fromtimestamp(stats.st_mtime).weekday()
+                    activity_data[day_idx] += 1
+        except: pass
+
+        cpu_usage = 0.0
+        ram_usage = 0.0
+        if psutil:
+            try:
+                cpu_usage = psutil.cpu_percent()
+                ram_usage = psutil.virtual_memory().percent
+            except PermissionError:
+                pass
+            except Exception:
+                pass
+        ws_files = 0
+        ws_size = 0
+        try:
+            for root, _, files in os.walk(self.workspace_dir):
+                ws_files += len(files)
+                ws_size += sum(os.path.getsize(os.path.join(root, name)) for name in files)
+        except: pass
+
+        return {
+            "uptime": uptime,
+            "total_tokens": self.total_tokens,
+            "active_tasks": active_tasks,
+            "activity": activity_data,
+            "tool_usage": self.tool_usage,
+            "system": {"cpu": cpu_usage, "ram": ram_usage},
+            "workspace": {"files": ws_files, "size": round(ws_size / (1024 * 1024), 2)},
+            "provider": self.config['default_provider'],
+            "model": self.config[self.config['default_provider']]['model'],
+            "channels": ["Terminal", "Web UI"] + (["Telegram"] if self.tg_app else [])
+        }
+
+    def get_settings(self):
+        user_md_path = os.path.join(self.base_dir, 'common', 'user.md')
+        prompt = ""
+        if os.path.exists(user_md_path):
+            with open(user_md_path, 'r', encoding='utf-8') as f:
+                prompt = f.read()
         
-        result_text = text
-        for cmd, path, content in matches:
-            cmd = cmd.strip()
-            path = path.strip()
-            content = content.strip() if content else ""
-            output = ""
-            
-            if cmd == "READ":
-                output = read_file(path)
-            elif cmd == "WRITE":
-                output = write_file(path, content)
-            elif cmd == "APPEND":
-                output = append_file(path, content)
-            elif cmd == "LIST":
-                # Gérer le pattern optionnel (ex: dossier|*.py)
-                parts = path.split('|')
-                dir_path = parts[0].strip()
-                pattern_glob = parts[1].strip() if len(parts) > 1 else "*"
-                output = list_files(dir_path, pattern_glob)
-            elif cmd == "DELETE":
-                output = delete_file(path)
-            elif cmd == "INFO":
-                output = get_file_info(path)
+        provider = self.config.get('default_provider', 'ollama')
+        temp = self.config.get(provider, {}).get('temperature', 0.7)
+        
+        return {
+            "system_prompt": prompt,
+            "temperature": temp
+        }
+
+    def _load_tasks(self):
+        if os.path.exists(self.tasks_path):
+            with open(self.tasks_path, 'r') as f:
+                tasks = yaml.safe_load(f) or []
+                for task in tasks:
+                    self.add_scheduled_task(task['type'], task['args'], task['instruction'], save=False)
+
+    def _save_tasks(self):
+        tasks = []
+        for job in self.scheduler.get_jobs():
+            tasks.append({
+                'type': job.args[0],
+                'args': job.args[1],
+                'instruction': job.args[2]
+            })
+        with open(self.tasks_path, 'w') as f:
+            yaml.dump(tasks, f)
+
+    def add_scheduled_task(self, trigger_type, trigger_args, instruction, save=True):
+        try:
+            if trigger_type == 'cron':
+                trigger = CronTrigger.from_crontab(trigger_args)
+            elif trigger_type == 'interval':
+                if trigger_args.endswith('s'):
+                    trigger = IntervalTrigger(seconds=int(trigger_args[:-1]))
+                elif trigger_args.endswith('m'):
+                    trigger = IntervalTrigger(minutes=int(trigger_args[:-1]))
+                else:
+                    trigger = IntervalTrigger(minutes=int(trigger_args))
             else:
-                continue
+                return f"Error: Unsupported trigger type {trigger_type}"
             
-            # Remplacer la balise par le résultat
-            # On cherche la balise exacte dans le texte original pour la remplacer
-            full_match = f"[FILE_{cmd}:{path}]"
-            if content:
-                full_match += f" {content}"
-            result_text = result_text.replace(full_match, f"\n📁 **Résultat de la commande `{cmd}`** :\n{output}\n")
-        
-        return result_text
+            task_id = str(uuid.uuid4())[:8]
+            self.scheduler.add_job(
+                self.execute_scheduled_task,
+                trigger,
+                args=[trigger_type, trigger_args, instruction],
+                id=task_id
+            )
+            if save: self._save_tasks()
+            return f"Success: Task {task_id} scheduled ({trigger_type}: {trigger_args})"
+        except Exception as e:
+            return f"Error scheduling task: {str(e)}"
 
-    def process_query(self, user_input: str) -> str:
+    def remove_scheduled_task(self, identifier):
+        try:
+            try:
+                self.scheduler.remove_job(identifier)
+                self._save_tasks()
+                return f"Success: Task ID {identifier} removed."
+            except:
+                pass
+
+            jobs = self.scheduler.get_jobs()
+            removed_count = 0
+            for job in jobs:
+                instruction = job.args[2].lower()
+                if identifier.lower() in instruction:
+                    self.scheduler.remove_job(job.id)
+                    removed_count += 1
+            
+            if removed_count > 0:
+                self._save_tasks()
+                return f"Success: Removed {removed_count} task(s) matching '{identifier}'."
+            
+            return f"Error: No task found matching '{identifier}'."
+        except Exception as e:
+            return f"Error removing task: {str(e)}"
+
+    async def execute_scheduled_task(self, t_type, t_args, instruction):
+        try:
+            self.system_prompt = self._load_system_prompt()
+            print(f"\n{self.ORANGE}{self.BOLD}⏰ AUTONOMOUS TASK TRIGGERED{self.RESET} {self.DIM}»{self.RESET} {instruction}")
+            reply = await self.process_message(f"AUTONOMOUS SCHEDULED TASK: {instruction}", source="AUTO")
+            
+            if reply:
+                try:
+                    push_notification(f"⏰ {reply}")
+                    print(f"{self.GREEN}{self.BOLD}👁  NOTIFIED{self.RESET} {self.DIM}»{self.RESET} Web UI")
+                except Exception as e:
+                    print(f"Web Notification Error: {e}")
+
+                if self.tg_app and self.last_tg_chat_id:
+                    try:
+                        await self.tg_app.bot.send_message(chat_id=self.last_tg_chat_id, text=f"🔔 {reply}")
+                        print(f"{self.GREEN}{self.BOLD}👁  NOTIFIED{self.RESET} {self.DIM}»{self.RESET} Telegram")
+                    except Exception as e:
+                        print(f"Telegram Notification Error: {e}")
+        except Exception as e:
+            import traceback
+            print(f"\n{self.RED}{self.BOLD}[!] CRITICAL ERROR IN SCHEDULED TASK:{self.RESET} {e}")
+            traceback.print_exc()
+
+    # --- BACKGROUND OBSERVER ---
+    async def _observe_system(self):
         """
-        Point d'entrée principal.
+        Tâche planifiée pour surveiller l'état du système et déclencher des actions proactives.
         """
-        # 1. Recherche dans la mémoire
-        memories = self.memory.search(user_input, top_k=4)
-        context_str = "\n".join([f"- {m}" for m in memories]) if memories else "Aucun souvenir pertinent."
-
-        # 2. Construction du prompt système
-        system_prompt = f"""{self.base_system_prompt}
-
-        **Contexte des conversations précédentes** (souvenirs) :
-        {context_str}
-
-        **Règles importantes** :
-        - Pour manipuler des fichiers, utilise OBLIGATOIREMENT les balises [FILE_XXX:...].
-        - N'écris JAMAIS de code dans les balises, seulement dans le contenu qui suit.
-        - Si tu crées un fichier, explique ce que tu fais puis utilise [FILE_WRITE:...].
-        - Si tu proposes des modifications, utilise [FILE_READ:...] pour voir le fichier d'abord.
-        """
-
-        # 3. Appel à l'IA
-        raw_response = self._call_llm(user_input, system_prompt)
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=1)
+            ram = psutil.virtual_memory().percent
+            
+            alerts = []
+            if cpu > 90:
+                alerts.append(f"CPU à {cpu}% (très élevé)")
+            if ram > 90:
+                alerts.append(f"Mémoire RAM à {ram}% (critique)")
+            
+            # Sur Android, essayer de récupérer la batterie via Shizuku
+            battery = None
+            if os.path.exists('/data/data/com.termux'):
+                try:
+                    bat_info = self.tools.android_control("get_battery", "")
+                    import re
+                    match = re.search(r'level:\s*(\d+)', bat_info)
+                    if match:
+                        battery = int(match.group(1))
+                        if battery < 20:
+                            alerts.append(f"Batterie à {battery}% (faible)")
+                except Exception as e:
+                    pass
+            
+            if alerts:
+                message = "[🔔 OBSERVATION SYSTÈME] " + " | ".join(alerts) + ". Je te suggère d'agir : réduire la charge ou activer le mode économie."
+                await self.process_message(message, source="AUTO")
         
-        # 4. Exécution des commandes fichiers
-        final_response = self._execute_file_commands(raw_response)
+        except Exception as e:
+            print(f"Background Observer error: {e}")
+
+    def _load_system_prompt(self):
+        user_md_path = os.path.join(self.base_dir, 'common', 'user.md')
+        if not os.path.exists(user_md_path):
+            with open(user_md_path, 'w', encoding='utf-8') as f:
+                f.write("# User Profile\n- Initialized")
+                
+        with open(user_md_path, 'r', encoding='utf-8') as f:
+            user_content = f.read()
         
-        # 5. Sauvegarder l'échange dans la mémoire (pour le contexte futur)
-        memory_entry = f"User: {user_input[:200]}\nAssistant: {final_response[:200]}"
-        self.memory.add(memory_entry)
+        current_time = datetime.now().strftime("%A, %B %d, %Y, %H:%M:%S")
+        profile = self.profile.get()
+        
+        # Construire un prompt système enrichi avec le nouveau nom et créateur
+        profile_text = f"""
+Profil utilisateur :
+- Nom : {profile.get('name', 'User')}
+- Humeur actuelle : {profile.get('mood', 'neutral')}
+- Faits connus : {', '.join(profile.get('facts', [])[:10])}
+- Préférences : {json.dumps(profile.get('preferences', {}), indent=2)}
+- Nombre d'interactions : {profile.get('interaction_count', 0)}
+"""
+        
+        return f"""
+{user_content}
+
+{profile_text}
+
+Tu es **NETFLASH CODE AGENT**, un agent autonome évolutif, conçu par **NETFLASH DIEU MAURICE** (t.me/mauridieu). Tu es son assistant ultime, proactif et intelligent.
+
+**Mémoire** : Tu as accès à une mémoire à long terme. Avant de répondre, tu recherches les souvenirs pertinents. Après chaque interaction, tu résumes l'échange et l'ajoutes à ta mémoire.
+
+**Planification** : Pour les tâches complexes, tu peux proposer un plan en plusieurs étapes. Utilise le format JSON avec une clé "plan" contenant une liste d'outils à exécuter séquentiellement.
+
+**Auto-amélioration** : Tu peux modifier ton propre prompt système (fichier user.md) si tu juges que cela améliore tes performances. Tu peux aussi suggérer des modifications de code, mais tu dois demander confirmation à l'utilisateur.
+
+**Proactivité** : Tu peux te programmer pour exécuter des tâches périodiques. Analyse l'état du système et propose des actions pertinentes.
+
+**Règles** :
+- Toujours vérifier les autorisations avant d'effectuer des actions sensibles.
+- En cas d'échec, réessayer avec une stratégie alternative.
+- Expliquer clairement tes décisions et tes observations.
+
+Système Time : {current_time}
+
+Outils disponibles (réponds en JSON si tu as besoin d'un outil ou d'un plan) :
+- list_files, list_files_recursive, get_workspace_tree, read_file, write_file, delete_file, create_directory, move_file, rename_file
+- web_search: query
+- update_user_profile: info (Save facts about the user here)
+- update_config: key, value
+- fetch_youtube_transcript: url
+- fetch_weather: city
+- web_scrape: url
+- python_sandbox: code
+- download_youtube: url, format_type (video/audio)
+- convert_media: input_file, output_format
+- local_rag_search: query
+- schedule_task: trigger_type ('cron' or 'interval'), schedule_args, instruction
+- list_tasks, remove_task, remove_all_tasks
+- remind_me: message, time_args
+- stop_reminders: keyword
+- android_control: action, target
+- edit_system_prompt: new_content (modifier le prompt système)
+- edit_agent_code: file_path, new_code (avec précaution)
+- get_user_profile, update_user_profile
+
+Important : Si tu souhaites envoyer un fichier à l'utilisateur (via Telegram), utilise le préfixe "SEND_FILE:" suivi du chemin absolu.
+"""
+
+    def log_chat(self, role, message):
+        log_file = os.path.join(self.chats_dir, f"session_{self.session_id}.md")
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"### [{timestamp}] {role}\n{message}\n\n")
+
+    def _parse_json(self, response):
+        try:
+            return json.loads(response)
+        except:
+            if "```json" in response:
+                content = response.split("```json")[1].split("```")[0].strip()
+                try: return json.loads(content)
+                except: pass
+            elif "```" in response:
+                content = response.split("```")[1].split("```")[0].strip()
+                try: return json.loads(content)
+                except: pass
+        return None
+
+    async def process_message(self, user_input, source="TERM"):
+        prefix = "👤 YOU" if source == "TERM" else f"👤 YOU ({source})"
+        context_history = []
+        correction_attempts = 0  # SELF-HEALING
+        
+        if source != "AUTO":
+            print(f"\n{self.AMBER}{self.BOLD}{prefix}{self.RESET} {self.DIM}»{self.RESET} {user_input}")
+            self.log_chat(f"USER ({source})", user_input)
+            self.history.append({"role": "user", "content": user_input})
+            self.total_tokens += len(user_input) // 4
+            context_history = self.history[-10:]
+
+        # Récupération des souvenirs pertinents
+        relevant_memories = self.memory.retrieve(user_input, top_k=3)
+        memory_context = ""
+        if relevant_memories:
+            memory_context = "Souvenirs pertinents :\n" + "\n".join([m['text'] for m in relevant_memories])
+
+        context = "\n".join([f"{m['role']}: {m['content']}" for m in context_history])
+        if memory_context:
+            context = memory_context + "\n" + context
+        if source == "AUTO":
+            context = f"SYSTEM: {user_input}"
+        
+        final_response = None
+        
+        for _ in range(5):
+            response = await self.model.generate_response(context, self.system_prompt)
+            tool_call = self._parse_json(response)
+            
+            # SELF-HEALING : si JSON invalide, on demande une correction
+            if tool_call is None and correction_attempts < 2:
+                correction_attempts += 1
+                error_msg = "Votre réponse n'était pas un JSON valide. Veuillez répondre avec un JSON valide (contenant 'tool' ou 'plan') ou une réponse normale en texte. Réessayez."
+                context += f"\nSystème: {error_msg}"
+                continue
+            elif tool_call is None and correction_attempts >= 2:
+                # Après 2 échecs, on considère que c'est une réponse texte normale
+                final_response = response
+                break
+            
+            if tool_call and isinstance(tool_call, dict) and "plan" in tool_call:
+                # Exécution d'un plan
+                plan = tool_call["plan"]
+                observations = []
+                for step in plan:
+                    tool_name = step.get("tool")
+                    args = step.get("args", {})
+                    if not tool_name:
+                        continue
+                    print(f"\n{self.ORANGE}{self.BOLD}🛠  PLAN STEP{self.RESET} {self.DIM}»{self.RESET} {tool_name}")
+                    observation = self.tools.execute_tool(tool_name, args)
+                    self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
+                    observations.append(f"Résultat de {tool_name}: {observation}")
+                    context += f"\nObservation de {tool_name}: {observation}"
+                # Re-générer la réponse finale
+                response = await self.model.generate_response(context, self.system_prompt)
+                tool_call = self._parse_json(response)
+                if not tool_call or "tool" not in tool_call:
+                    final_response = response
+                    break
+                else:
+                    # On laisse la boucle traiter l'outil simple
+                    pass
+            
+            if tool_call and isinstance(tool_call, dict) and "tool" in tool_call:
+                thought = tool_call.get('thought', 'Processing...')
+                tool_name = tool_call['tool']
+                args = tool_call.get('args', {})
+                
+                print(f"\n{self.ORANGE}{self.BOLD}🧠 THOUGHT{self.RESET} {self.DIM}»{self.RESET} {thought}")
+                print(f"{self.AMBER}{self.BOLD}🛠  ACTION{self.RESET}  {self.DIM}»{self.RESET} {tool_name}")
+                
+                observation = self.tools.execute_tool(tool_name, args)
+                self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
+                
+                if tool_name == 'edit_system_prompt' and 'Success' in observation:
+                    self.system_prompt = self._load_system_prompt()
+                if tool_name == 'update_config' and 'Success' in observation:
+                    self.reload_config()
+                
+                print(f"{self.GREEN}{self.BOLD}👁  OBSERVE{self.RESET} {self.DIM}»{self.RESET} Task Success")
+                
+                self.log_chat("NETFLASH_CODE_THOUGHT", thought)
+                self.log_chat("NETFLASH_CODE_ACTION", f"Tool: {tool_name}")
+                self.log_chat("OBSERVATION", observation)
+                
+                context += f"\nAgent Thought: {thought}\nObservation from {tool_name}: {observation}"
+                continue
+            else:
+                # FINAL ANSWER
+                final_response = response
+                if source == "AUTO":
+                    print(f"\n{self.ORANGE}{self.BOLD}📢 PROACTIVE BROADCAST{self.RESET} {self.DIM}»{self.RESET} {final_response}")
+                else:
+                    print(f"\n{self.ORANGE}{self.BOLD}{self.LOGO}   NETFLASH CODE AGENT{self.RESET} {self.DIM}»{self.RESET} {final_response}")
+                
+                self.log_chat("NETFLASH_CODE_RESPONSE", final_response)
+                if source != "AUTO":
+                    self.history.append({"role": "assistant", "content": final_response})
+                break
+        
+        if final_response is None:
+            final_response = "Reasoning limit reached."
+        
+        # Stocker dans la mémoire un résumé de l'échange
+        summary = f"User: {user_input}\nAgent: {final_response}"
+        self.memory.add_memory(summary, {"source": source, "session": self.session_id})
+        self.profile.add_conversation(summary[:200])
         
         return final_response
 
-# ====================================================
-# Pour une utilisation directe en CLI (test rapide)
-# ====================================================
-if __name__ == "__main__":
-    agent = VoidmeAgent()
-    print("🤖 Assistant Voidme prêt. Tape 'exit' pour quitter.")
+    async def process_message_stream(self, user_input):
+        print(f"\n{self.AMBER}{self.BOLD}👤 YOU (WEB){self.RESET} {self.DIM}»{self.RESET} {user_input}")
+        self.log_chat("USER (WEB)", user_input)
+        self.history.append({"role": "user", "content": user_input})
+        context = "\n".join([f"{m['role']}: {m['content']}" for m in self.history[-10:]])
+        correction_attempts = 0  # SELF-HEALING
+        
+        # Récupérer souvenirs
+        relevant_memories = self.memory.retrieve(user_input, top_k=3)
+        memory_context = ""
+        if relevant_memories:
+            memory_context = "Souvenirs pertinents :\n" + "\n".join([m['text'] for m in relevant_memories])
+        if memory_context:
+            context = memory_context + "\n" + context
+        
+        final_text = ""
+        for _ in range(5):
+            response = await self.model.generate_response(context, self.system_prompt)
+            tool_call = self._parse_json(response)
+            
+            # SELF-HEALING
+            if tool_call is None and correction_attempts < 2:
+                correction_attempts += 1
+                error_msg = "Votre réponse n'était pas un JSON valide. Veuillez répondre avec un JSON valide (contenant 'tool' ou 'plan') ou une réponse normale en texte. Réessayez."
+                context += f"\nSystème: {error_msg}"
+                continue
+            elif tool_call is None and correction_attempts >= 2:
+                final_text = response
+                break
+            
+            if tool_call and isinstance(tool_call, dict) and "plan" in tool_call:
+                plan = tool_call["plan"]
+                observations = []
+                for step in plan:
+                    tool_name = step.get("tool")
+                    args = step.get("args", {})
+                    if not tool_name:
+                        continue
+                    yield f"THOUGHT:Exécution du plan - {tool_name}"
+                    observation = self.tools.execute_tool(tool_name, args)
+                    self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
+                    observations.append(f"Résultat de {tool_name}: {observation}")
+                    context += f"\nObservation de {tool_name}: {observation}"
+                response = await self.model.generate_response(context, self.system_prompt)
+                tool_call = self._parse_json(response)
+                if not tool_call or "tool" not in tool_call:
+                    final_text = response
+                    break
+                # sinon continue pour traiter outil simple
+            
+            if tool_call and isinstance(tool_call, dict) and "tool" in tool_call:
+                thought = tool_call.get('thought', 'Thinking...')
+                tool_name = tool_call['tool']
+                args = tool_call.get('args', {})
+                
+                print(f"\n{self.ORANGE}{self.BOLD}🧠 THOUGHT (WEB){self.RESET} {self.DIM}»{self.RESET} {thought}")
+                print(f"{self.AMBER}{self.BOLD}🛠  ACTION (WEB){self.RESET}  {self.DIM}»{self.RESET} {tool_name}")
+                
+                yield f"THOUGHT:{thought} | Executing {tool_name}..."
+                observation = self.tools.execute_tool(tool_name, args)
+                print(f"{self.GREEN}{self.BOLD}👁  OBSERVE (WEB){self.RESET} {self.DIM}»{self.RESET} Task Success")
+                
+                self.log_chat("NETFLASH_CODE_THOUGHT", thought)
+                self.log_chat("NETFLASH_CODE_ACTION", f"Tool: {tool_name}")
+                self.log_chat("OBSERVATION", observation)
+                
+                context += f"\nAgent Thought: {thought}\nObservation: {observation}"
+                continue
+            else:
+                print(f"\n{self.ORANGE}{self.BOLD}{self.LOGO}   NETFLASH CODE AGENT (WEB){self.RESET} {self.DIM}»{self.RESET} Streaming response...")
+                yield "START_STREAM"
+                async for chunk in self.model.generate_stream(context, self.system_prompt):
+                    if self.interrupted:
+                        yield f"CHUNK:\n\n[TRANSMISSION INTERRUPTED BY USER]"
+                        self.interrupted = False
+                        break
+                    final_text += chunk
+                    yield f"CHUNK:{chunk}"
+                self.log_chat("NETFLASH_CODE_RESPONSE", final_text)
+                self.history.append({"role": "assistant", "content": final_text})
+                # Stocker dans la mémoire
+                summary = f"User: {user_input}\nAgent: {final_text}"
+                self.memory.add_memory(summary, {"source": "WEB", "session": self.session_id})
+                self.profile.add_conversation(summary[:200])
+                break
+
+def print_dashboard(config):
+    ORANGE, GREEN, AMBER, SLATE, RESET, BOLD = '\033[38;5;214m', '\033[92m', '\033[93m', '\033[90m', '\033[0m', '\033[1m'
+    logo = r"""
+      ███╗   ██╗███████╗████████╗███████╗██╗      █████╗ ███████╗██╗  ██╗
+      ████╗  ██║██╔════╝╚══██╔══╝██╔════╝██║     ██╔══██╗██╔════╝██║  ██║
+      ██╔██╗ ██║█████╗     ██║   █████╗  ██║     ███████║███████╗███████║
+      ██║╚██╗██║██╔══╝     ██║   ██╔══╝  ██║     ██╔══██║╚════██║██╔══██║
+      ██║ ╚████║██║        ██║   ██║     ███████╗██║  ██║███████║██║  ██║
+      ╚═╝  ╚═══╝╚═╝        ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
+    """
+    print(f"{ORANGE}─"*64)
+    print(f"{ORANGE}{logo}{RESET}")
+    print(f"{AMBER}           NETFLASH CODE AGENT - Créé par NETFLASH DIEU MAURICE{RESET}")
+    print(f"{AMBER}           t.me/mauridieu{RESET}")
+    print(f"{ORANGE}─"*64 + RESET)
+    print(f"{ORANGE}{BOLD}⚡   NETFLASH CODE AGENT v3.0 (HERMES Edition){RESET}")
+    print(f"{AMBER}PROVIDER: {RESET}{config['default_provider'].upper()} | {AMBER}MODEL: {RESET}{config[config['default_provider']]['model']}")
+    print(f"{AMBER}CHANNELS: {GREEN}TERMINAL{RESET} & {GREEN}TELEGRAM{RESET} & {GREEN}WEB UI{RESET}")
+    print(f"{ORANGE}{'─'*64}{RESET}\n")
+
+async def terminal_loop(agent):
+    loop = asyncio.get_running_loop()
     while True:
-        user_msg = input("\n🧑 Vous : ")
-        if user_msg.lower() in ["exit", "quit", "q"]:
+        try:
+            print(f"\033[38;5;214m\033[1m❯\033[0m ", end="", flush=True)
+            user_input = await loop.run_in_executor(None, sys.stdin.readline)
+            if not user_input: break
+            user_input = user_input.strip()
+            
+            if user_input.lower() in ['exit', 'quit']:
+                print("\033[91mShutting down NETFLASH CODE AGENT...\033[0m")
+                os._exit(0)
+            if user_input.lower() == 'new chat':
+                print(f"\033[92m{agent.clear_session()}\033[0m")
+                continue
+            if not user_input:
+                continue
+            
+            await agent.process_message(user_input, source="TERM")
+        except Exception as e:
+            print(f"Terminal Error: {e}")
             break
-        response = agent.process_query(user_msg)
-        print(f"\n🤖 IA : {response}")
+
+async def main():
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(base_dir, 'common', 'config.yaml')
+    
+    if not os.path.exists(config_path):
+        print("\033[91m[!] Configuration file not found at common/config.yaml\033[0m")
+        print("\033[93m[*] Please run the installation script first to configure the agent.\033[0m")
+        return
+
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    agent = VoidClawAgent(config_path)
+    
+    if os.path.exists('/data/data/com.termux'):
+        agent.tools._provision_shizuku()
+        
+    os.system('cls' if os.name == 'nt' else 'clear')
+    print_dashboard(config)
+
+    web_thread = threading.Thread(target=start_web_server, args=(agent,), daemon=True)
+    web_thread.start()
+
+    print(f"\033[38;5;214m[SYSTEM]\033[0m Starting Autonomous Scheduler...")
+    agent.scheduler.start()
+
+    token = config.get('telegram_token', '').strip()
+    if token and token != "YOUR_TELEGRAM_BOT_TOKEN":
+        print(f"\033[38;5;214m[SYSTEM]\033[0m Establishing Telegram Secure Link...")
+        
+        async def handle_tg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message or not update.message.text: return
+            agent.last_tg_chat_id = update.effective_chat.id
+            print(f"\n\033[38;5;214m[TELEGRAM]\033[0m Incoming transmission from {update.effective_user.first_name}...")
+            reply = await agent.process_message(update.message.text, source="TG")
+            
+            if reply.startswith("SEND_FILE:"):
+                file_path = reply.split(":", 1)[1].strip()
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'rb') as f:
+                            await update.message.reply_document(document=f, filename=os.path.basename(file_path))
+                    except Exception as e:
+                        await update.message.reply_text(f"❌ Erreur lors de l'envoi du fichier : {str(e)}")
+                else:
+                    await update.message.reply_text(f"❌ Fichier introuvable : `{file_path}`")
+            else:
+                await update.message.reply_text(reply)
+
+        async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.message.document:
+                return
+            doc = update.message.document
+            file = await doc.get_file()
+            from werkzeug.utils import secure_filename
+            safe_name = secure_filename(doc.file_name) if doc.file_name else f"file_{uuid.uuid4().hex[:8]}"
+            file_path = os.path.join(agent.workspace_dir, safe_name)
+            await file.download_to_drive(file_path)
+            await update.message.reply_text(f"📎 Fichier reçu : `{safe_name}` (sauvegardé dans le workspace)")
+            await agent.process_message(f"L'utilisateur a envoyé le fichier {safe_name}", source="TG")
+
+        for attempt in range(3):
+            try:
+                from telegram.request import HTTPXRequest
+                request = HTTPXRequest(connect_timeout=60.0, read_timeout=60.0)
+                application = ApplicationBuilder().token(token).request(request).build()
+                agent.tg_app = application
+                
+                application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_tg))
+                application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+                
+                await application.initialize()
+                await application.start()
+                await application.updater.start_polling(drop_pending_updates=True)
+                
+                print(f"\033[92m[+] Telegram Bot active.\033[0m")
+                await terminal_loop(agent)
+                return
+            except Exception as e:
+                try:
+                    if 'application' in locals():
+                        await application.shutdown()
+                except: pass
+                
+                if attempt < 2:
+                    wait = (attempt + 1) * 5
+                    print(f"\033[93m[!] Telegram Connection retry {attempt+1}/3 in {wait}s... ({e})\033[0m")
+                    await asyncio.sleep(wait)
+                else:
+                    print(f"\n\033[91m[!] Telegram Setup Failed: {e}\033[0m")
+                    print("\033[93m[*] Continuing in Terminal + Web mode.\033[0m")
+                    await terminal_loop(agent)
+    else:
+        print("\033[93m[!] Telegram token not set. Running in Terminal + Web mode.\033[0m")
+        await terminal_loop(agent)
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
