@@ -1,82 +1,18 @@
-from flask import Flask, request, jsonify, render_template_string
+import os
+import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from core.agent import VoidmeAgent  # Correction du chemin
-import os
-import threading
+from core.agent import VoidmeAgent
 from dotenv import load_dotenv
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Initialisation de l'agent
+# Initialisation de l'agent (version mémoire vectorielle avec NumPy)
 agent = VoidmeAgent()
 
-# --- Interface Web (Flask) ---
-app = Flask(__name__)
-
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voidme - Assistant Codeur</title>
-    <style>
-        body { background: #111; color: #0f0; font-family: monospace; padding: 20px; }
-        #chat { height: 400px; overflow-y: scroll; border: 1px solid #0f0; padding: 10px; margin-bottom: 10px; }
-        input { width: 80%; background: #222; color: #0f0; border: 1px solid #0f0; padding: 10px; }
-        button { background: #0f0; color: #000; padding: 10px 20px; border: none; cursor: pointer; }
-    </style>
-</head>
-<body>
-    <h1>⚡ Voidme - Assistant Codeur</h1>
-    <div id="chat"></div>
-    <input type="text" id="input" placeholder="Pose ta question...">
-    <button onclick="send()">Envoyer</button>
-    <script>
-        async function send() {
-            let inp = document.getElementById('input');
-            let msg = inp.value.trim();
-            if (!msg) return;
-            inp.value = '';
-            let chat = document.getElementById('chat');
-            chat.innerHTML += '<br><b>Moi :</b> ' + msg;
-            try {
-                let res = await fetch('/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ msg: msg })
-                });
-                let data = await res.json();
-                chat.innerHTML += '<br><b>IA :</b> ' + data.response;
-                chat.scrollTop = chat.scrollHeight;
-            } catch (e) {
-                chat.innerHTML += '<br><b>Erreur :</b> ' + e.message;
-            }
-        }
-        // Permet d'envoyer avec la touche Entrée
-        document.getElementById('input').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') send();
-        });
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    msg = request.json.get('msg')
-    try:
-        response = agent.process_query(msg)
-        return jsonify({'response': response})
-    except Exception as e:
-        return jsonify({'response': f"❌ Erreur : {str(e)}"}), 500
-
-# --- Bot Telegram ---
+# --- Gestionnaire Telegram ---
 async def tg_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_msg = update.message.text
     try:
@@ -85,8 +21,28 @@ async def tg_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Erreur : {str(e)}")
 
-def run_telegram():
+def main():
     token = os.getenv("TELEGRAM_TOKEN")
+    
+    # Si le token Telegram est présent, on lance le bot
+    if token:
+        print("🚀 Bot Telegram en cours d'exécution...")
+        app_tg = Application.builder().token(token).build()
+        app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tg_handler))
+        app_tg.run_polling()
+    else:
+        # Sinon, on lance un mode CLI (terminal)
+        print("⚠️  TELEGRAM_TOKEN manquant dans .env")
+        print("💻 Mode CLI activé. Tape 'exit' pour quitter.")
+        while True:
+            user_input = input("\n🧑 Vous : ")
+            if user_input.lower() in ["exit", "quit", "q"]:
+                break
+            response = agent.process_query(user_input)
+            print(f"🤖 : {response}")
+
+if __name__ == '__main__':
+    main()    token = os.getenv("TELEGRAM_TOKEN")
     if not token:
         print("⚠️  TELEGRAM_TOKEN manquant dans .env – le bot Telegram ne démarre pas.")
         return
