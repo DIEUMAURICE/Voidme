@@ -5,7 +5,7 @@
 
 <!-- Clean Title -->
 <h1>
-  <img src="https://readme-typing-svg.demolab.com?font=Inter&weight=600&size=36&duration=2000&pause=500&color=E8B81A&center=true&vCenter=true&width=550&height=60&lines=VOIDCLAW;AUTONOMOUS+AI+CORE;SELF+EVOLVING+AI+AGENT;FOR;WINDOWS;MAC;LINUX;ANDROID;BY;MOHD+ABUZAR" alt="Typing SVG" />
+  <img src="https://readme-typing-svg.demolab.com?font=Inter&weight=600&size=36&duration=2000&pause=500&color=E8B81A&center=true&vCenter=true&width=550&height=60&lines=VOIDME;AUTONOMOUS+AI+CORE;SELF+EVOLVING+AI+AGENT;FOR;WINDOWS;MAC;LINUX;ANDROID;BY;MOHD+ABUZAR" alt="Typing SVG" />
 </h1>
 
 <!-- Subtitle -->
@@ -38,7 +38,7 @@
 
 ## 📖 Overview
 
-VoidClaw is a highly advanced, local-first AI agent framework. It acts as a continuous autonomous assistant that learns your preferences over time, interacts with your local filesystem, scrapes the web, and proactively manages your digital life. Designed for portability, it runs seamlessly on high-end PCs and Android phones alike, turning your device into an autonomous mission hub.
+Voidme is a highly advanced, local-first AI agent framework. It acts as a continuous autonomous assistant that learns your preferences over time, interacts with your local filesystem, scrapes the web, and proactively manages your digital life. Designed for portability, it runs seamlessly on high-end PCs and Android phones alike, turning your device into an autonomous mission hub.
 
 ## 🗂️ Project Structure
 
@@ -54,7 +54,7 @@ voidclaw/
 
 ## ⚡ Lightweight & Mini-Requirements
 
-VoidClaw is engineered to be **ultra-lightweight**. While it can harness the power of massive models, the core agent itself consumes minimal resources.
+Voidme is engineered to be **ultra-lightweight**. While it can harness the power of massive models, the core agent itself consumes minimal resources.
 
 *   **Mini-Requirement:** Can run on a **$10-15 Raspberry Pi Zero 2 W or Pi 3/4/5** with as little as **512MB RAM** (when using Cloud APIs like Gemini or OpenRouter).
 *   **Production Ready:** Efficiently manages background tasks without battery drain on mobile devices.
@@ -77,7 +77,7 @@ VoidClaw is engineered to be **ultra-lightweight**. While it can harness the pow
 
 ## 🌟 Major Highlights
 
-*   **📱 Android System Control (Shizuku):** VoidClaw is now integrated with **Shizuku**. It can autonomously open apps, navigate your phone, toggle system settings (WiFi, Bluetooth, Dark Mode), simulate precision touch gestures (Tap, Swipe), and capture screenshots directly from your chat.
+*   **📱 Android System Control (Shizuku):** Voidme is now integrated with **Shizuku**. It can autonomously open apps, navigate your phone, toggle system settings (WiFi, Bluetooth, Dark Mode), simulate precision touch gestures (Tap, Swipe), and capture screenshots directly from your chat.
 *   **⏰ 24/7 Proactive Autonomy:** Set reminders, briefings, or complex tasks in seconds or minutes. VoidClaw proactively "messages" you across all channels with sound notifications and unique UI transmissions when a task triggers.
 *   **🧠 Evolutionary Memory:** Automatically deduces and records your preferences, workflows, and expertise in a permanent neural vault to adapt its personality and assistance to you.
 *   **🌐 Tri-Channel Interface:** Seamlessly switch between a premium **Glassmorphism Web UI**, remote control via **Telegram**, or a high-resolution **Terminal Dashboard**. All channels are synchronized in real-time.
@@ -106,7 +106,7 @@ VoidClaw is engineered to be **ultra-lightweight**. While it can harness the pow
 
 ## 🚀 Installation & Setup
 
-VoidClaw is designed to be **100% portable**. 
+Voidme is designed to be **100% portable**. 
 
 ## 📱 Android (Termux) - The Mobile Command Center 
 
@@ -168,7 +168,7 @@ cd Voidme
         1.  In Shizuku app, tap **"Use Shizuku in terminal apps"** -> **"Export files"**.
         2.  Save them into a folder named **"Shizuku"** in your phone's Internal Storage.
         3.  In Termux, run: `termux-setup-storage` and grant permission.
-    *   **Step D: Launch VoidClaw**
+    *   **Step D: Launch Voidme**
         Start the agent in Termux: `./termux/run.sh`.
         The agent will detect the files and show: `[SYSTEM] Shizuku environment provisioned successfully.`
 
